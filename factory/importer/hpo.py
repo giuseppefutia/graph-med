@@ -1,42 +1,5 @@
-"""
-HPO Importer — migrated from neosemantics (n10s) to rdflib-neo4j.
-
-MIGRATION SUMMARY
-=================
-What changed:
-  - Removed: n10s server-side plugin dependency (no more n10s.graphconfig.init,
-    n10s.graphconfig.set, n10s.rdf.import.fetch).
-  - Added: rdflib + rdflib-neo4j for client-side RDF parsing and ingestion.
-  - The HANDLE_VOCAB_URI_STRATEGY.IGNORE setting replaces n10s's
-    `handleVocabUris: 'IGNORE'` — URIs are stripped to local names.
-
-What stayed the same:
-  - All Cypher post-processing queries (labeling, CSV loading, APOC calls).
-  - The `n10s_unique_uri` constraint (rdflib-neo4j still uses Resource nodes
-    with a `uri` property).
-  - APOC Core is still required for apoc.text.replace, apoc.text.regexGroups,
-    and apoc.periodic.iterate.
-
-Caveats:
-  - n10s `applyNeo4jNaming: True` auto-converted property names to camelCase
-    and relationship types to UPPER_SNAKE_CASE. rdflib-neo4j with IGNORE
-    strategy strips the namespace prefix and uses the raw local name from the
-    URI. In practice, for the HPO ontology, the resulting labels should be
-    equivalent, but you should verify after the first import that property
-    names and relationship types look correct. If they don't, you can use
-    rdflib-neo4j's `custom_mappings` to remap specific predicates.
-  - rdflib-neo4j currently supports import only (no RDF export, SHACL
-    validation, or inferencing that n10s provided).
-  - The hp.owl file (~180MB) is parsed client-side in Python, which is slower
-    than n10s's server-side fetch. Expect the ontology loading step to take
-    longer (several minutes depending on hardware/network). Batching is
-    enabled to keep memory usage reasonable.
-
-Requirements:
-  pip install rdflib rdflib-neo4j neo4j
-"""
-
 import logging
+logging.getLogger("neo4j.notifications").setLevel(logging.WARNING)
 
 from neo4j.exceptions import ClientError as Neo4jClientError
 from rdflib import Graph as RDFGraph, Namespace
@@ -46,12 +9,9 @@ from rdflib_neo4j import Neo4jStoreConfig, Neo4jStore, HANDLE_VOCAB_URI_STRATEGY
 def hpo_factory(base_importer_cls: str, backend: str):
 
     class HPOImporter(base_importer_cls):
-
-        # ── HPO ontology URL ──────────────────────────────────────────
+        
         HPO_OWL_URL = "http://purl.obolibrary.org/obo/hp.owl"
 
-        # ── Prefixes used in the HPO ontology ─────────────────────────
-        # Add/adjust prefixes here if rdflib complains about unknown ones
         HPO_PREFIXES = {
             'obo': Namespace('http://purl.obolibrary.org/obo/'),
             'oboInOwl': Namespace('http://www.geneontology.org/formats/oboInOwl#'),
@@ -69,22 +29,10 @@ def hpo_factory(base_importer_cls: str, backend: str):
                 session.run(f"CREATE DATABASE {self._database} IF NOT EXISTS")
 
         # ──────────────────────────────────────────────────────────────
-        # Helper: build auth_data dict for rdflib-neo4j from the base
-        # class's driver. Adjust this if your base class exposes the
-        # connection details differently.
+        # Helper: build auth_data dict for rdflib-neo4j from the
+        # Neo4jGraphDB instance
         # ──────────────────────────────────────────────────────────────
         def _get_auth_data(self) -> dict:
-            """
-            Construct the auth_data dictionary that rdflib-neo4j expects.
-            Override or adjust this method to match your base class's
-            connection properties.
-
-            Expected base class attributes:
-                self._uri       – bolt:// or neo4j:// URI
-                self._user      – Neo4j username (usually 'neo4j')
-                self._password  – Neo4j password
-                self._database  – target database name
-            """
             return {
                 'uri': self._uri,
                 'database': self._database,
@@ -97,7 +45,6 @@ def hpo_factory(base_importer_cls: str, backend: str):
         # ──────────────────────────────────────────────────────────────
         def set_constraints(self):
             queries = [
-                # Required by rdflib-neo4j — same constraint n10s used
                 "CREATE CONSTRAINT n10s_unique_uri IF NOT EXISTS FOR (r:Resource) REQUIRE r.uri IS UNIQUE;",
                 "CREATE CONSTRAINT IF NOT EXISTS FOR (n:Resource) REQUIRE (n.id) IS UNIQUE;",
                 "CREATE INDEX disease_id IF NOT EXISTS FOR (n:HpoDisease) ON (n.id);",
@@ -118,12 +65,6 @@ def hpo_factory(base_importer_cls: str, backend: str):
             """
             Parse hp.owl (RDF/XML) through rdflib and persist every triple
             into Neo4j via the Neo4jStore backend.
-
-            This replaces:
-                CALL n10s.graphconfig.init();
-                CALL n10s.graphconfig.set({ handleVocabUris: 'IGNORE' });
-                CALL n10s.graphconfig.set({ applyNeo4jNaming: True });
-                CALL n10s.rdf.import.fetch("http://purl.obolibrary.org/obo/hp.owl", "RDF/XML");
             """
             # Skip if data is already loaded
             with self._driver.session(database=self._database) as session:
@@ -144,18 +85,20 @@ def hpo_factory(base_importer_cls: str, backend: str):
             neo4j_graph = RDFGraph(store=Neo4jStore(config=config))
 
             logging.info(
-                "Downloading and parsing %s — this may take several minutes...",
+                "Downloading and parsing %s — ...",
                 self.HPO_OWL_URL,
             )
             # rdflib will download the URL and parse it as RDF/XML
             neo4j_graph.parse(self.HPO_OWL_URL, format="xml")
 
-            # IMPORTANT: close the store to flush any remaining batched writes
+            # Close the store to flush any remaining batched writes
             neo4j_graph.close(commit_pending_transaction=True)
             logging.info("Ontology import complete.")
 
         # ──────────────────────────────────────────────────────────────
-        # 3-7. Post-processing — unchanged Cypher / APOC queries
+        # Post-processing queries to label nodes, create disease nodes, 
+        # create relationships, enrich relationships with properties, 
+        # and clean up unused nodes
         # ──────────────────────────────────────────────────────────────
         def label_HPO_entities(self):
             query = """
@@ -281,10 +224,6 @@ def hpo_factory(base_importer_cls: str, backend: str):
         def apply_updates(self):
             logging.info("Loading constraints and indexes...")
             self.set_constraints()
-
-            # NOTE: check_neo_semantics() and initialize_neo_semantics()
-            # are no longer needed — rdflib-neo4j handles everything
-            # client-side without requiring any server-side plugin.
 
             logging.info("Loading HPO ontology via rdflib-neo4j...")
             self.load_HPO_ontology()
