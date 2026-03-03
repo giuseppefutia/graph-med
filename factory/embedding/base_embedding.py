@@ -251,7 +251,7 @@ def embedding_factory(
 
         # ── Orchestration ──────────────────────────────────────────────────
 
-        def apply_updates(self, batch_size: int = 128, concurrency: int = 3):
+        def apply_updates(self, batch_size: int = 1024, concurrency: int = 2):
             logging.info("Ensuring vector indexes...")
             for spec in self.node_specs:
                 self._ensure_vector_index(

@@ -33,12 +33,12 @@ def run_importer(importer_factory, base_cls, backend: str, file_name: str, base_
     importer.import_data(str(data_file))
     importer.close()
 
-def run_updater(importer_factory, base_cls, backend: str):
+def run_updater(importer_factory, base_cls, backend: str, **kwargs):
     # Create the importer class dynamically using the backend and base class
     ImporterClass = importer_factory(base_cls, backend)
 
     # Instantiate and run update logic
     updater = ImporterClass()
     logging.info(f"Applying updates to the graph using backend '{backend}'...")
-    updater.apply_updates()
+    updater.apply_updates(**kwargs)
     updater.close()

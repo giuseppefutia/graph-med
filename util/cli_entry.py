@@ -22,8 +22,15 @@ def run_backend_importer(
     else:
         parser.add_argument("--file", help=file_help)
 
+    # Optional base path argument for importers that need to construct file paths
     parser.add_argument("--base_path", default=default_base_path,
                         help="Base directory where the file is located")
+    
+    # For embedding importers, allow optional batch size and concurrency parameters
+    parser.add_argument("--batch_size", type=int, default=None,
+                        help="Embedding batch size (texts per API request)")
+    parser.add_argument("--concurrency", type=int, default=None,
+                        help="Number of concurrent embedding API requests")
 
     args = parser.parse_args()
 
@@ -38,4 +45,9 @@ def run_backend_importer(
     if require_file:
         run_importer(importer_factory_func, base_cls, args.backend, args.file, base_path=args.base_path)
     else:
-        run_updater(importer_factory_func, base_cls, args.backend)
+        kwargs = {}
+        if args.batch_size is not None:
+            kwargs["batch_size"] = args.batch_size
+        if args.concurrency is not None:
+            kwargs["concurrency"] = args.concurrency
+        run_updater(importer_factory_func, base_cls, args.backend, **kwargs)
