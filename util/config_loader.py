@@ -1,6 +1,19 @@
 import os
 import configparser
+from pathlib import Path
 from typing import Optional
+
+_PROJECT_ROOT = Path(__file__).resolve().parent.parent
+
+
+def _resolve_config(path: str) -> str:
+    """Return *path* if it exists, otherwise look in the project root."""
+    if os.path.isfile(path):
+        return path
+    fallback = str(_PROJECT_ROOT / os.path.basename(path))
+    if os.path.isfile(fallback):
+        return fallback
+    return path  # let the caller raise FileNotFoundError
 
 
 def load_config(env_section: Optional[str] = None, path: str = "config.ini") -> str:
@@ -14,6 +27,7 @@ def load_config(env_section: Optional[str] = None, path: str = "config.ini") -> 
       - ValueError if `uri` is missing/empty
     """
     cfg = configparser.ConfigParser()
+    path = _resolve_config(path)
     if not cfg.read(path):
         raise FileNotFoundError(f"Couldn't find {path} in the current directory.")
 
