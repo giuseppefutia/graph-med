@@ -650,8 +650,8 @@ RELATIONSHIP TYPES
      - rationale: STRING           // e.g. "Cholera is a cause of diarrhea."
      - support: STRING             // e.g. JSON-like text, e.g. "{"evidence": "Cholera is a cause of diarrhea.", "r"
 
-3) :SUBCLASSOF
-   Pattern: (:HpoPhenotype)-[:SUBCLASSOF]->(:HpoPhenotype)
+3) :subClassOf
+   Pattern: (:HpoPhenotype)-[:subClassOf]->(:HpoPhenotype)
 
 4) :HAS_CHILD
    Pattern: (:IcdDisease)-[:HAS_CHILD]->(:IcdDisease)
@@ -688,7 +688,7 @@ Global rules:
 - Respect relationship directions as defined in the schema.
 - Prefer the simplest pattern that answers the question.
 - Avoid RETURN *; instead return a small, useful set of properties.
-- Do NOT use :UMLS nodes or UMLS_* relationships unless the user explicitly mentions UMLS, CUI(s), or cross-mapping via UMLS.
+- Do NOT use :Umls nodes or UMLS_* relationships unless the user explicitly mentions UMLS, CUI(s), or cross-mapping via UMLS.
 - If the question cannot be answered with the schema, return:
   RETURN "Question cannot be answered with the available schema" AS message
 
@@ -710,7 +710,7 @@ Clinical mapping rules:
   - HPO: "HP:0000001" → MATCH (p:HpoPhenotype {id: "HP:0000001"})
   - OMIM: "OMIM:619340" → MATCH (d:HpoDisease {id: "OMIM:619340"})
   - ICD: "A00" → MATCH (d:IcdDisease {id: "A00"})
-  - UMLS CUI: "C0000727" → MATCH (u:UMLS {id: "C0000727"})
+  - UMLS CUI: "C0000727" → MATCH (u:Umls {id: "C0000727"})
 - Inheritance / onset / frequency / sex bias:
   - Use properties on :HAS_PHENOTYPIC_FEATURE from HpoDisease to HpoPhenotype:
     r.frequency, r.onset, r.sex, r.aspect, r.aspectName, r.modifier.

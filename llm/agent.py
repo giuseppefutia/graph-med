@@ -10,6 +10,7 @@ from llm.chain import (
 )
 
 from llm.tool import build_patient_info_tool
+from util.config_loader import load_config_api
 
 from llm.query_factory import (
     get_patient_icd_codes,
@@ -40,7 +41,7 @@ class AgentState(TypedDict, total=False):
 
 llm = ChatOpenAI(
     api_key="EMPTY",
-    base_url="https://chatcompletion-uncognizable-nilda.ngrok-free.dev/v1",
+    base_url=load_config_api("llm"),
     model_name="google/medgemma-4b-it",
     temperature=0,
     max_tokens=24000,

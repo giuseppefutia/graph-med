@@ -56,7 +56,7 @@ def get_patient_views(
                         matches that calendar day.
     """
     cypher = """
-    CALL apoc.dv.query('patient', {patientId: $patient_id}) YIELD node AS v
+    CALL apoc.dv.query('encounter', {patientId: $patient_id}) YIELD node AS v
     RETURN v
     """
     rows = enhanced_graph.query(cypher, {"patient_id": patient_id})

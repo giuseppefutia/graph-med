@@ -41,7 +41,7 @@ def get_patient_icd_codes(patient_id: str) -> List[str]:
     unique, uppercase, non-empty ICD-10 codes.
     """
     cypher = """
-    CALL apoc.dv.query('patient', {patientId: $pid}) YIELD node AS v
+    CALL apoc.dv.query('encounter', {patientId: $pid}) YIELD node AS v
     WITH apoc.convert.fromJsonList(
            coalesce(
                apoc.any.property(v, 'ICD10_Codes'),
@@ -72,15 +72,15 @@ def map_icd_to_hpo(icd_codes: List[str]) -> List[str]:
         return []
 
     cypher = """
-    CALL {
+    CALL () {
         UNWIND $codes AS code
         MATCH (:IcdDisease {id: code})-[:ICD_MAPS_TO_HPO_BY_EMBEDDING]->(h:HpoPhenotype)
         RETURN DISTINCT h.id AS hpo_id
-        
+
         UNION
-        
+
         UNWIND $codes AS code
-        MATCH (:IcdDisease {id: code})<-[:UMLS_TO_ICD]-(:UMLS)-[:UMLS_TO_HPO_PHENOTYPE]->(h:HpoPhenotype)
+        MATCH (:IcdDisease {id: code})<-[:UMLS_TO_ICD]-(:Umls)-[:UMLS_TO_HPO_PHENOTYPE]->(h:HpoPhenotype)
         RETURN DISTINCT h.id AS hpo_id
     }
     RETURN collect(DISTINCT hpo_id) AS hpo_ids;
@@ -97,7 +97,7 @@ def rollup_hpo_to_ancestors(hpo_ids: List[str]) -> List[str]:
 
     cypher = """
     UNWIND $ids AS hid
-    MATCH (h:HpoPhenotype {id: hid})-[:SUBCLASSOF*0..]->(anc:HpoPhenotype)
+    MATCH (h:HpoPhenotype {id: hid})-[:subClassOf*0..]->(anc:HpoPhenotype)
     WITH collect(DISTINCT anc.id) AS target
     RETURN [id IN apoc.coll.toSet(target) WHERE id IS NOT NULL] AS target
     """

@@ -57,15 +57,30 @@ def load_config_api(service: Optional[str] = None, path: str = "config.ini") -> 
     svc = (service or os.getenv("API_SERVICE", "chat")).lower()
     section_map = {
         "chat": "chat-api",
-        "llm": "open-api",
+        "llm": "chat-api",
         "embedding": "embedding-api",
         "neo4j": "neo4j",
+        "gnn": "gnn-api",
     }
     try:
         section = section_map[svc]
     except KeyError:
         raise ValueError(f'Unknown service "{svc}". Use one of: {", ".join(section_map)}.')
     return load_config(section, path=path)
+
+
+def load_neo4j_config(path: str = "config.ini") -> dict:
+    """Return Neo4j connection params from the [neo4j] section of config.ini."""
+    cfg = configparser.ConfigParser()
+    path = _resolve_config(path)
+    if not cfg.read(path):
+        raise FileNotFoundError(f"Couldn't find {path} in the current directory.")
+    return {
+        "url":      cfg.get("neo4j", "uri",      fallback="bolt://localhost:7687"),
+        "username": cfg.get("neo4j", "user",     fallback="neo4j"),
+        "password": cfg.get("neo4j", "password", fallback="password"),
+        "database": cfg.get("neo4j", "database", fallback="neo4j"),
+    }
 
 
 if __name__ == "__main__":
