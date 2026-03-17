@@ -37,8 +37,11 @@ def run_updater(importer_factory, base_cls, backend: str, **kwargs):
     # Create the importer class dynamically using the backend and base class
     ImporterClass = importer_factory(base_cls, backend)
 
-    # Instantiate and run update logic
+    # Pop routing key before passing remaining kwargs to the method
+    method_name = kwargs.pop("method", "apply_updates")
+
     updater = ImporterClass()
-    logging.info(f"Applying updates to the graph using backend '{backend}'...")
-    updater.apply_updates(**kwargs)
+    logging.info(f"Calling {method_name}() using backend '{backend}'...")
+    method = getattr(updater, method_name)
+    method(**kwargs)
     updater.close()

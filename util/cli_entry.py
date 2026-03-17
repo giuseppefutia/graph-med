@@ -32,6 +32,10 @@ def run_backend_importer(
     parser.add_argument("--concurrency", type=int, default=None,
                         help="Number of concurrent embedding API requests")
 
+    # Allow callers to route to a non-default entry point (default: apply_updates)
+    parser.add_argument("--method", default=None,
+                        help="Updater method to call (default: apply_updates)")
+
     args = parser.parse_args()
 
     backend_map = {
@@ -50,4 +54,6 @@ def run_backend_importer(
             kwargs["batch_size"] = args.batch_size
         if args.concurrency is not None:
             kwargs["concurrency"] = args.concurrency
+        if args.method is not None:
+            kwargs["method"] = args.method
         run_updater(importer_factory_func, base_cls, args.backend, **kwargs)

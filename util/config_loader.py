@@ -61,6 +61,7 @@ def load_config_api(service: Optional[str] = None, path: str = "config.ini") -> 
         "embedding": "embedding-api",
         "neo4j": "neo4j",
         "gnn": "gnn-api",
+        "gretriever": "gretriever-api",
     }
     try:
         section = section_map[svc]
