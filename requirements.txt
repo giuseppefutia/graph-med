@@ -1,0 +1,12 @@
+Jinja2==3.1.6
+langchain-core==1.2.14
+langchain-neo4j>=0.6.0,<1.0.0
+langchain-openai==1.1.10
+langgraph>=1.0.3,<2.0.0
+neo4j==6.1.0
+openai==2.21.0
+pandas==3.0.1
+rdflib==7.5.0
+rdflib-neo4j==1.1
+requests==2.32.5
+tqdm==4.67.2
