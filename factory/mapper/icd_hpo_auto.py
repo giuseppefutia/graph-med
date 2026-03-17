@@ -3,21 +3,20 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import warnings
 from dataclasses import asdict, dataclass
 from typing import Any, Dict, Generator, Iterable, List, Optional, Tuple
 
 from langchain_openai import ChatOpenAI
 
-from previous.graph_similarity import GraphSimilarity
 from util.config_loader import load_config_api
-from util.api_client import ApiClient
-from llm.utils import EmbedAPI
 from llm.tool import build_ontology_mapper_tool
 
 
 logging.getLogger("openai").setLevel(logging.WARNING)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
+warnings.filterwarnings("ignore", message="Pydantic serializer warnings", category=UserWarning)
 
 
 def ontology_mapper_factory(base_importer_cls, backend: str, config_path: str = "config.ini"):
@@ -45,17 +44,14 @@ def ontology_mapper_factory(base_importer_cls, backend: str, config_path: str = 
     class OntologyMapper(base_importer_cls):
         """ICD → HPO mapping: select candidates, build context, disambiguate, write edges."""
 
-        CYPHER_QUERY_TOPK = """
-        CALL db.index.vector.queryNodes($index, $k, $qe) YIELD node, score
-        RETURN node.id AS id, node.label AS label, score
-        ORDER BY score DESC
-        LIMIT $k
-        """
-
-        CYPHER_QUERY_TOPK_BATCH = """
+        # Uses the stored embedding_label on each IcdDisease node instead
+        # of calling the embedding API — no external API required.
+        CYPHER_QUERY_TOPK_STORED_BATCH = """
         UNWIND $items AS row
         CALL (row) {
-          CALL db.index.vector.queryNodes($index, $k, row.qe) YIELD node, score
+          MATCH (src:IcdDisease {id: row.id})
+          WHERE src.embedding_label IS NOT NULL
+          CALL db.index.vector.queryNodes($index, $k, src.embedding_label) YIELD node, score
           RETURN collect({id: node.id, label: node.label, score: score}) AS topk
         }
         RETURN row.key AS key, topk[0..$k] AS topk
@@ -96,8 +92,7 @@ def ontology_mapper_factory(base_importer_cls, backend: str, config_path: str = 
           id: p.id,
           label: p.label,
           exactSynonym: p.hasExactSynonym,
-          description: p.comment,
-          comment: p.iAO_0000115
+          description: p.comment
         } AS context
         """
 
@@ -108,8 +103,7 @@ def ontology_mapper_factory(base_importer_cls, backend: str, config_path: str = 
           id: p.id,
           label: p.label,
           exactSynonym: p.hasExactSynonym,
-          description: p.comment,
-          comment: p.iAO_0000115
+          description: p.comment
         } AS context
         """
 
@@ -128,17 +122,8 @@ def ontology_mapper_factory(base_importer_cls, backend: str, config_path: str = 
             self.source_label: str = "IcdDisease"
             self.target_label: str = "HpoPhenotype"
             self.target_index_name: str = "hpo_phenotype_embedding"
-            self.relationship_type: str = "ICD_MAPS_TO_HPO_PHENOTYPE"
+            self.relationship_type: str = "ICD_MAPS_TO_HPO_BY_EMBEDDING"
             self.relationship_conf_prop: str = "confidence"
-
-            # Graph similarity (Path B)
-            self.graph_sim = GraphSimilarity(config_path=config_path)
-            self.graph_relationship_type: str = "ICD_MAPS_TO_HPO_GRAPH"
-            self.graph_processed_label: str = "ProcessedWithGraphMapper"
-
-            # Embeddings
-            cfg_emb = load_config_api("embedding", path=config_path)
-            self.emb_api = EmbedAPI(ApiClient(cfg_emb))
 
             # LLM + tool
             url_llm = load_config_api("llm", path=config_path)
@@ -155,10 +140,6 @@ def ontology_mapper_factory(base_importer_cls, backend: str, config_path: str = 
             )
             self.ontology_mapper_tool = build_ontology_mapper_tool(self.llm)
 
-        def close(self):
-            self.graph_sim.close()
-            super().close()
-
         @staticmethod
         def _md_to_params(md: MappingDecision) -> Dict[str, Any]:
             """Neo4j param mapping for MappingDecision (JSON-encode support)."""
@@ -169,33 +150,23 @@ def ontology_mapper_factory(base_importer_cls, backend: str, config_path: str = 
         # ──────────────────────────────────────────────────────────────
         # Candidate Selection (single & batch)
         # ──────────────────────────────────────────────────────────────
-        def select_candidates(self, text: str) -> List[Candidate]:
-            """Top-K vector search for a single source text."""
-            embedding = self.emb_api.embed(text)
-            with self._driver.session(database=self._database) as session:
-                result = session.run(
-                    self.CYPHER_QUERY_TOPK,
-                    index=self.target_index_name,
-                    k=self.k,
-                    qe=embedding,
-                )
-                return [Candidate(id=r["id"], label=r["label"], score=r["score"]) for r in result]
+        def select_candidates_stored_in_batch(
+            self, sources: List[Tuple[str, str]]  # [(source_id, source_label)]
+        ) -> Dict[str, List[Candidate]]:
+            """
+            Path B variant of select_candidates_in_batch.
 
-        def select_candidates_in_batch(self, labels: List[str]) -> Dict[str, List[Candidate]]:
+            Uses the stored embedding_label on each IcdDisease node as the query
+            vector — no embedding API call required.
+            Returns the same {label -> [Candidate]} structure for compatibility.
             """
-            Batch Top-K vector search.
-            Returns: {label -> [Candidate, ...]} preserving input order.
-            """
-            if not labels:
+            if not sources:
                 return {}
-
-            embeddings = self.emb_api.embed_many(labels)
-            items = [{"key": labels[i], "qe": embeddings[i]} for i in range(len(labels))]
-
+            items = [{"id": sid, "key": lbl} for sid, lbl in sources]
             out: Dict[str, List[Candidate]] = {}
             with self._driver.session(database=self._database) as session:
                 result = session.run(
-                    self.CYPHER_QUERY_TOPK_BATCH,
+                    self.CYPHER_QUERY_TOPK_STORED_BATCH,
                     items=items,
                     index=self.target_index_name,
                     k=self.k,
@@ -342,7 +313,9 @@ def ontology_mapper_factory(base_importer_cls, backend: str, config_path: str = 
         # ──────────────────────────────────────────────────────────────
         def run_disambiguation(self, source_id: str, source_label: str) -> MappingDecision:
             """Single source disambiguation: select → context → LLM."""
-            candidates = self.select_candidates(source_label)
+            candidates = self.select_candidates_stored_in_batch(
+                [(source_id, source_label)]
+            ).get(source_label, [])
             ctx = self.build_context(source_id=source_id, candidates=candidates)
             result = self.disambiguate_candidates(
                 source_concept=source_label,
@@ -361,9 +334,8 @@ def ontology_mapper_factory(base_importer_cls, backend: str, config_path: str = 
             if not sources:
                 return []
 
-            # 1) vector candidates
-            labels = [lbl for _, lbl in sources]
-            cand_map = self.select_candidates_in_batch(labels)
+            # 1) vector candidates (stored embeddings — no API call)
+            cand_map = self.select_candidates_stored_in_batch(sources)
 
             # 2) graph contexts
             ctx_map = self.build_context_in_batch(sources, cand_map)
@@ -379,88 +351,6 @@ def ontology_mapper_factory(base_importer_cls, backend: str, config_path: str = 
             decisions = self.disambiguate_candidates_batch_sync(items, max_concurrency=max_concurrency)
 
             # 5) align back
-            return [(sid, lbl, md) for (sid, lbl), md in zip(sources, decisions)]
-
-        # ──────────────────────────────────────────────────────────────
-        # Path B: Graph-similarity reranking
-        # ──────────────────────────────────────────────────────────────
-        def rerank_candidates_by_graph_in_batch(
-            self,
-            sources: List[Tuple[str, str]],       # [(source_id, source_label)]
-            cand_map: Dict[str, List[Candidate]], # label -> [Candidate]
-        ) -> Dict[str, List[Candidate]]:
-            """
-            Rerank each candidate list using GraphSimilarity.
-
-            For every source ICD code the graph similarity between the ICD node
-            and each HPO candidate is computed (combined semantic + structural).
-            Candidates are returned in descending graph-score order and their
-            `score` field is replaced with the graph similarity value.
-            """
-            out: Dict[str, List[Candidate]] = {}
-            for sid, lbl in sources:
-                candidates = cand_map.get(lbl, [])
-                if not candidates:
-                    out[lbl] = []
-                    continue
-                cand_ids = [c.id for c in candidates]
-                try:
-                    ranked = self.graph_sim.rank_by_relevance(
-                        sid, cand_ids, method="combined"
-                    )
-                except Exception as exc:
-                    logging.warning(
-                        "[GraphRerank] Failed for %s: %s — keeping vector order", sid, exc
-                    )
-                    out[lbl] = candidates
-                    continue
-                id_to_score = dict(ranked)
-                id_to_cand = {c.id: c for c in candidates}
-                out[lbl] = [
-                    Candidate(id=c_id, label=id_to_cand[c_id].label, score=score)
-                    for c_id, score in ranked
-                    if c_id in id_to_cand
-                ]
-            return out
-
-        def run_disambiguation_graph_in_batch(
-            self,
-            sources: List[Tuple[str, str]],  # [(source_id, source_label)]
-            max_concurrency: int = 8,
-        ) -> List[Tuple[str, str, MappingDecision]]:
-            """
-            Path B batch disambiguation.
-
-            Steps:
-              1. Vector top-K (same candidates as Path A)
-              2. Graph-similarity rerank
-              3. Context fetch
-              4. LLM disambiguation
-            """
-            if not sources:
-                return []
-
-            # 1) vector candidates
-            labels = [lbl for _, lbl in sources]
-            cand_map = self.select_candidates_in_batch(labels)
-
-            # 2) graph rerank (replaces vector order / score)
-            cand_map = self.rerank_candidates_by_graph_in_batch(sources, cand_map)
-
-            # 3) graph contexts (same as Path A)
-            ctx_map = self.build_context_in_batch(sources, cand_map)
-
-            # 4) LLM inputs (preserve order)
-            items = []
-            for sid, lbl in sources:
-                sc = ctx_map.get(sid, {}).get("source", {})
-                cc = ctx_map.get(sid, {}).get("candidates", [])
-                items.append((lbl, sc, cc))
-
-            # 5) LLM batch
-            decisions = self.disambiguate_candidates_batch_sync(
-                items, max_concurrency=max_concurrency
-            )
             return [(sid, lbl, md) for (sid, lbl), md in zip(sources, decisions)]
 
         # ──────────────────────────────────────────────────────────────
@@ -550,73 +440,6 @@ def ontology_mapper_factory(base_importer_cls, backend: str, config_path: str = 
             total = self.count_missing_source_nodes()
             # get_source_nodes_in_batch streams items lazily, already batched internally.
             self.batch_store(query, self.get_source_nodes_in_batch(), size=total)
-
-        def count_missing_source_nodes_graph(self) -> int:
-            """Count source nodes not yet processed by the graph mapper."""
-            query = f"""
-            MATCH (n:{self.source_label})
-            WHERE NOT "{self.graph_processed_label}" IN labels(n)
-            RETURN count(n) AS cnt
-            """
-            with self._driver.session(database=self._database) as session:
-                rec = session.run(query).single()
-                return rec["cnt"] if rec else 0
-
-        def get_source_nodes_graph_in_batch(
-            self, batch_size: int = 8
-        ) -> Generator[Dict[str, Any], None, None]:
-            """Stream nodes and apply graph-reranked disambiguation in batches."""
-            query = f"""
-            MATCH (n:{self.source_label})
-            WHERE NOT "{self.graph_processed_label}" IN labels(n)
-            RETURN n.id AS id, n.label AS label
-            """
-            with self._driver.session(database=self._database) as session:
-                rows: List[Tuple[str, str]] = [
-                    (rec["id"], rec["label"]) for rec in session.run(query)
-                ]
-
-            for i in range(0, len(rows), batch_size):
-                chunk = rows[i : i + batch_size]
-                for sid, lbl, md in self.run_disambiguation_graph_in_batch(
-                    chunk, max_concurrency=8
-                ):
-                    if md.confidence >= self.llm_threshold:
-                        yield {
-                            "id": sid,
-                            "label": lbl,
-                            "disambiguation_result": self._md_to_params(md),
-                        }
-
-        def merge_graph_mapping_relationship(self) -> None:
-            """Write graph-reranked edges and mark sources as graph-processed."""
-            logging.info(
-                "Merging graph mapping relationship: %s -> %s [%s]",
-                self.source_label,
-                self.target_label,
-                self.graph_relationship_type,
-            )
-            query = f"""
-            UNWIND $batch AS item
-            MATCH (source:{self.source_label} {{id: item.id}})
-            MATCH (target:{self.target_label} {{id: item.disambiguation_result.best_id}})
-            MERGE (source)-[r:{self.graph_relationship_type}]->(target)
-            SET r.{self.relationship_conf_prop} = item.disambiguation_result.confidence,
-                r.rationale = item.disambiguation_result.rationale,
-                r.support = item.disambiguation_result.support
-            SET source:{self.graph_processed_label}
-            """
-            total = self.count_missing_source_nodes_graph()
-            self.batch_store(query, self.get_source_nodes_graph_in_batch(), size=total)
-
-        def apply_graph_updates(self) -> None:
-            """
-            Path B entrypoint: vector top-K → graph rerank → LLM → ICD_MAPS_TO_HPO_GRAPH.
-
-            Run this after apply_updates() (Path A) or independently.
-            """
-            logging.info("Starting Graph Similarity Mapping (Path B)...")
-            self.merge_graph_mapping_relationship()
 
         def apply_updates(self) -> None:
             """Entrypoint used by the CLI importer."""
